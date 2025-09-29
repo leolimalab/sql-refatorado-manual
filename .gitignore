@@ -32,3 +32,6 @@ desktop.ini
 # Temporary files
 *.tmp
 *.bak
+
+# Outros
+aux/
