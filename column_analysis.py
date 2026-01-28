@@ -1,10 +1,20 @@
 #!/usr/bin/env python3
 """
-Column Analysis Script: Compare view/1_linha_tempo.sql against 111-column specification
+Analise de colunas: compara a especificacao de 111 colunas com a
+implementacao do SELECT final em view/1_linha_tempo.sql.
 """
 
+from __future__ import annotations
+
+from collections import Counter
+from dataclasses import dataclass
+from typing import Dict, Iterable, List, Optional, Sequence
+
+EXPECTED_COLUMNS_COUNT = 111
+MAX_MISMATCHES_TO_SHOW = 10
+
 # 111 columns from PLANEJAMENTO_111_COLUNAS.md
-expected_111_columns = [
+EXPECTED_111_COLUMNS = [
     # GRUPO 1: Dados Básicos do Paciente (1-16)
     "id_paciente", "cpf", "cns_string", "nome", "data_nascimento",
     "idade_gestante", "faixa_etaria", "raca", "numero_gestacao", "id_gestacao",
@@ -66,7 +76,7 @@ expected_111_columns = [
 ]
 
 # Extracted columns from view/1_linha_tempo.sql (from final CTE SELECT statement)
-implemented_columns = [
+IMPLEMENTED_COLUMNS = [
     # Basic patient data (1-18)
     "id_paciente", "cpf", "cns_string", "nome", "data_nascimento", "idade_gestante",
     "faixa_etaria", "raca", "numero_gestacao", "id_gestacao", "data_inicio", "data_fim",
@@ -131,56 +141,191 @@ implemented_columns = [
     "Urg_Emrg", "ue_data_consulta", "ue_motivo_atendimento", "ue_nome_estabelecimento"
 ]
 
-def analyze_columns():
-    """Compare expected vs implemented columns"""
+# Aliases for backwards compatibility
+expected_111_columns = EXPECTED_111_COLUMNS
+implemented_columns = IMPLEMENTED_COLUMNS
 
-    expected_set = set(expected_111_columns)
-    implemented_set = set(implemented_columns)
 
-    missing = expected_set - implemented_set
-    extra = implemented_set - expected_set
-    present = expected_set & implemented_set
+@dataclass(frozen=True)
+class OrderMismatch:
+    position: int
+    expected: str
+    found: str
 
-    print("=== COLUMN ANALYSIS REPORT ===")
-    print(f"Expected columns: {len(expected_111_columns)}")
-    print(f"Implemented columns: {len(implemented_columns)}")
-    print(f"Columns present: {len(present)}")
-    print(f"Missing columns: {len(missing)}")
-    print(f"Extra columns: {len(extra)}")
+
+@dataclass(frozen=True)
+class ColumnReport:
+    expected: Sequence[str]
+    implemented: Sequence[str]
+    missing: List[str]
+    extra: List[str]
+    duplicates_expected: Dict[str, int]
+    duplicates_implemented: Dict[str, int]
+    order_mismatches: List[OrderMismatch]
+    expected_positions: Dict[str, List[int]]
+    implemented_positions: Dict[str, List[int]]
+
+    @property
+    def expected_count(self) -> int:
+        return len(self.expected)
+
+    @property
+    def implemented_count(self) -> int:
+        return len(self.implemented)
+
+    @property
+    def expected_unique_count(self) -> int:
+        return len(set(self.expected))
+
+    @property
+    def implemented_unique_count(self) -> int:
+        return len(set(self.implemented))
+
+    @property
+    def present_count(self) -> int:
+        return len(set(self.expected) & set(self.implemented))
+
+    @property
+    def missing_count(self) -> int:
+        return len(self.missing)
+
+    @property
+    def extra_count(self) -> int:
+        return len(self.extra)
+
+    @property
+    def order_matches(self) -> bool:
+        return len(self.order_mismatches) == 0
+
+
+def index_positions(columns: Sequence[str]) -> Dict[str, List[int]]:
+    positions: Dict[str, List[int]] = {}
+    for idx, col in enumerate(columns, start=1):
+        positions.setdefault(col, []).append(idx)
+    return positions
+
+
+def find_duplicates(columns: Sequence[str]) -> Dict[str, int]:
+    counts = Counter(columns)
+    return {col: count for col, count in counts.items() if count > 1}
+
+
+def compare_order(expected: Sequence[str], implemented: Sequence[str]) -> List[OrderMismatch]:
+    expected_set = set(expected)
+    implemented_filtered = [col for col in implemented if col in expected_set]
+    mismatches: List[OrderMismatch] = []
+    for idx, (exp, got) in enumerate(zip(expected, implemented_filtered), start=1):
+        if exp != got:
+            mismatches.append(OrderMismatch(position=idx, expected=exp, found=got))
+    return mismatches
+
+
+def analyze_columns(expected: Sequence[str], implemented: Sequence[str]) -> ColumnReport:
+    expected_set = set(expected)
+    implemented_set = set(implemented)
+
+    missing = sorted(expected_set - implemented_set)
+    extra = sorted(implemented_set - expected_set)
+
+    return ColumnReport(
+        expected=expected,
+        implemented=implemented,
+        missing=missing,
+        extra=extra,
+        duplicates_expected=find_duplicates(expected),
+        duplicates_implemented=find_duplicates(implemented),
+        order_mismatches=compare_order(expected, implemented),
+        expected_positions=index_positions(expected),
+        implemented_positions=index_positions(implemented),
+    )
+
+
+def format_positions(positions: Iterable[int]) -> str:
+    return ", ".join(str(pos) for pos in positions)
+
+
+def print_list(
+    title: str, items: Sequence[str], positions: Optional[Dict[str, List[int]]] = None
+) -> None:
+    print(title)
+    if not items:
+        print("  - nenhuma")
+        print()
+        return
+    for i, col in enumerate(items, 1):
+        suffix = ""
+        if positions is not None and col in positions:
+            suffix = f" (posicoes: {format_positions(positions[col])})"
+        print(f"  {i:2d}. {col}{suffix}")
     print()
 
-    if missing:
-        print("🚨 MISSING COLUMNS:")
-        for i, col in enumerate(sorted(missing), 1):
-            print(f"  {i:2d}. {col}")
+
+def print_duplicates(title: str, duplicates: Dict[str, int]) -> None:
+    print(title)
+    if not duplicates:
+        print("  - nenhuma")
         print()
+        return
+    for i, (col, count) in enumerate(sorted(duplicates.items()), 1):
+        print(f"  {i:2d}. {col} (x{count})")
+    print()
 
-    if extra:
-        print("➕ EXTRA COLUMNS (not in 111-column spec):")
-        for i, col in enumerate(sorted(extra), 1):
-            print(f"  {i:2d}. {col}")
+
+def print_order_mismatches(mismatches: Sequence[OrderMismatch]) -> None:
+    if not mismatches:
+        print("ORDEM:")
+        print("  - OK (ordem das colunas esperadas esta correta)")
         print()
+        return
 
-    print("✅ COLUMNS CORRECTLY IMPLEMENTED:")
-    print(f"   {len(present)}/{len(expected_111_columns)} ({len(present)/len(expected_111_columns)*100:.1f}%)")
+    print("ORDEM:")
+    print("  - divergencias encontradas (mostrando as primeiras)")
+    for mismatch in mismatches[:MAX_MISMATCHES_TO_SHOW]:
+        print(
+            f"  {mismatch.position:2d}. esperado={mismatch.expected} | "
+            f"encontrado={mismatch.found}"
+        )
+    if len(mismatches) > MAX_MISMATCHES_TO_SHOW:
+        print("  ...")
+    print()
 
-    return {
-        'expected_count': len(expected_111_columns),
-        'implemented_count': len(implemented_columns),
-        'present_count': len(present),
-        'missing_count': len(missing),
-        'extra_count': len(extra),
-        'missing_columns': sorted(missing),
-        'extra_columns': sorted(extra),
-        'present_columns': sorted(present)
-    }
+
+def print_summary(report: ColumnReport) -> None:
+    print("=== RELATORIO DE ANALISE DE COLUNAS ===")
+    print(f"Esperadas: {report.expected_count} (unicas: {report.expected_unique_count})")
+    print(
+        f"Implementadas: {report.implemented_count} (unicas: {report.implemented_unique_count})"
+    )
+    print(f"Presentes: {report.present_count}")
+    print(f"Faltando: {report.missing_count}")
+    print(f"Extras: {report.extra_count}")
+    print(
+        f"Percentual: {report.present_count}/{report.expected_count} "
+        f"({report.present_count / report.expected_count * 100:.1f}%)"
+    )
+    if report.expected_count != EXPECTED_COLUMNS_COUNT:
+        print(
+            f"AVISO: esperadas {EXPECTED_COLUMNS_COUNT} colunas, "
+            f"mas a lista tem {report.expected_count}."
+        )
+    print()
+
+
+def main() -> None:
+    report = analyze_columns(EXPECTED_111_COLUMNS, IMPLEMENTED_COLUMNS)
+
+    print_summary(report)
+    print_list("COLUNAS FALTANTES:", report.missing, report.expected_positions)
+    print_list("COLUNAS EXTRAS:", report.extra, report.implemented_positions)
+    print_duplicates("DUPLICADAS NA ESPECIFICACAO:", report.duplicates_expected)
+    print_duplicates("DUPLICADAS NA IMPLEMENTACAO:", report.duplicates_implemented)
+    print_order_mismatches(report.order_mismatches)
+
+    if report.missing_count == 0 and report.extra_count == 0 and report.order_matches:
+        print("STATUS FINAL: OK")
+    else:
+        print("STATUS FINAL: ATENCAO")
+
 
 if __name__ == "__main__":
-    result = analyze_columns()
-
-    print("\n=== SUMMARY ===")
-    if result['missing_count'] == 0:
-        print("🎉 ALL 111 COLUMNS ARE IMPLEMENTED!")
-    else:
-        print(f"⚠️  {result['missing_count']} columns are missing")
-        print(f"📊 Implementation status: {result['present_count']}/{result['expected_count']} columns")
+    main()
