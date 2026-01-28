@@ -1,10 +1,27 @@
 -- ============================================================================
--- ARQUIVO: condicoes/1_gestacoes.sql
+-- ARQUIVO: 1_condicoes/1_gestacoes.sql
 -- PROPÓSITO: CTEs básicas para identificação e gestão de gestações
 -- TABELA DESTINO: _condicoes
 -- ============================================================================
+-- 
+-- DESCRIÇÃO:
+--   Este script identifica gestações a partir de eventos clínicos (CIDs Z32.1, 
+--   Z34%, Z35%) e cria a tabela base de condições. Os eventos são agrupados
+--   por paciente com janela de 60 dias para identificar gestações distintas.
+--
+-- DEPENDÊNCIAS:
+--   - rj-sms.saude_historico_clinico.paciente
+--   - rj-sms.saude_historico_clinico.episodio_assistencial
+--
+-- SAÍDA:
+--   - Tabela `_condicoes` com dados básicos de cada gestação
+--   - Colunas de hipertensão são inicializadas com valores default (NULL/0)
+--     e serão populadas pelo script 2_gest_hipertensao.sql
+--
+-- AUTOR: Monitor Gestante Team
+-- ÚLTIMA ATUALIZAÇÃO: 2026-01
+-- ============================================================================
 
--- Sintaxe para criar ou substituir uma consulta salva (procedimento)
 CREATE OR REPLACE PROCEDURE `rj-sms-sandbox.sub_pav_us.proced_cond_gestacoes`()
 
 BEGIN
@@ -205,30 +222,34 @@ WITH
 
     -- ------------------------------------------------------------
     -- CTE: filtrado
-    -- Define fase_atual e trimestre_atual_gestacao
+    -- Define fase_atual, trimestre_atual_gestacao e faixa_etaria
+    -- Nota: idade_gestante já foi calculada na CTE cadastro_paciente
     -- ------------------------------------------------------------
     filtrado AS (
         SELECT
             gcs.*,
+            -- Determina a fase atual da gestação
             CASE
                 WHEN gcs.data_fim IS NULL
                 AND DATE_ADD(gcs.data_inicio, INTERVAL 300 DAY) > CURRENT_DATE() THEN 'Gestação'
                 WHEN gcs.data_fim IS NOT NULL
-                AND DATE_DIFF (CURRENT_DATE(), gcs.data_fim, DAY) <= 45 THEN 'Puerpério'
+                AND DATE_DIFF(CURRENT_DATE(), gcs.data_fim, DAY) <= 45 THEN 'Puerpério'
                 ELSE 'Encerrada'
             END AS fase_atual,
+            -- Determina o trimestre atual (só faz sentido para gestações ativas)
             CASE
-                WHEN DATE_DIFF (CURRENT_DATE(), gcs.data_inicio, WEEK) <= 13 THEN '1º trimestre'
-                WHEN DATE_DIFF (CURRENT_DATE(), gcs.data_inicio, WEEK) BETWEEN 14 AND 27 THEN '2º trimestre'
-                WHEN DATE_DIFF (CURRENT_DATE(), gcs.data_inicio, WEEK) >= 28 THEN '3º trimestre'
+                WHEN DATE_DIFF(CURRENT_DATE(), gcs.data_inicio, WEEK) <= 13 THEN '1º trimestre'
+                WHEN DATE_DIFF(CURRENT_DATE(), gcs.data_inicio, WEEK) BETWEEN 14 AND 27 THEN '2º trimestre'
+                WHEN DATE_DIFF(CURRENT_DATE(), gcs.data_inicio, WEEK) >= 28 THEN '3º trimestre'
                 ELSE 'Data inválida ou encerrada'
             END AS trimestre_atual_gestacao,
-            -- Incluir cálculo faixa etária conforme regra
+            -- Faixa etária baseada na idade atual da gestante
+            -- CORREÇÃO: Usar idade_gestante diretamente (já calculada corretamente)
             CASE
-                WHEN DATE_DIFF(CURRENT_DATE(), gcs.data_inicio, YEAR) - gcs.idade_gestante <= 15 THEN '≤15 anos'
-                WHEN DATE_DIFF(CURRENT_DATE(), gcs.data_inicio, YEAR) - gcs.idade_gestante <= 20 THEN '16-20 anos'
-                WHEN DATE_DIFF(CURRENT_DATE(), gcs.data_inicio, YEAR) - gcs.idade_gestante <= 30 THEN '21-30 anos'
-                WHEN DATE_DIFF(CURRENT_DATE(), gcs.data_inicio, YEAR) - gcs.idade_gestante <= 40 THEN '31-40 anos'
+                WHEN gcs.idade_gestante <= 15 THEN '≤15 anos'
+                WHEN gcs.idade_gestante <= 20 THEN '16-20 anos'
+                WHEN gcs.idade_gestante <= 30 THEN '21-30 anos'
+                WHEN gcs.idade_gestante <= 40 THEN '31-40 anos'
                 ELSE '>40 anos'
             END AS faixa_etaria
         FROM gestacoes_com_status gcs

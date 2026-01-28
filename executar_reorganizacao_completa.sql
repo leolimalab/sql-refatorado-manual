@@ -7,13 +7,14 @@
 
 -- INÍCIO DA EXECUÇÃO
 SELECT 'INICIANDO REORGANIZAÇÃO SQL MONITOR GESTANTE' as status;
+SELECT CURRENT_DATETIME() as data_inicio;
 
 -- ============================================================================
 -- FASE 1: CONDIÇÕES BASE (APENAS GESTAÇÕES)
 -- ============================================================================
 
 SELECT 'FASE 1: Executando condições base - gestações...' as status;
-CALL `rj-sms-sandbox.sub_pav_us.proced_condicoes_gestacoes`();
+CALL `rj-sms-sandbox.sub_pav_us.proced_cond_gestacoes`();
 SELECT 'CONCLUÍDO: Tabela _condicoes criada' as status;
 
 -- ============================================================================
@@ -25,7 +26,7 @@ CALL `rj-sms-sandbox.sub_pav_us.proced_atd_prenatal_aps`();
 SELECT 'CONCLUÍDO: Tabela _atendimentos criada com dados pré-natal' as status;
 
 SELECT 'FASE 2: Adicionando visitas ACS...' as status;
-CALL `rj-sms-sandbox.sub_pav_us.proced_atd_visitas_acs_gestacao`();
+CALL `rj-sms-sandbox.sub_pav_us.proced_atd_visitas_acs`();
 SELECT 'CONCLUÍDO: Visitas ACS adicionadas à _atendimentos' as status;
 
 SELECT 'FASE 2: Adicionando consultas emergenciais...' as status;

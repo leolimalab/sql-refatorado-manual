@@ -1,10 +1,34 @@
 -- ============================================================================
--- ARQUIVO: atendimentos/1_atd_prenatal_aps.sql
+-- ARQUIVO: 2_atendimentos/1_atd_prenatal_aps.sql
 -- PROPÓSITO: CTEs para atendimentos de pré-natal na Atenção Primária à Saúde
--- TABELA DESTINO: _atendimentos
+-- TABELA DESTINO: _atendimentos (CREATE)
+-- ============================================================================
+-- 
+-- DESCRIÇÃO:
+--   Este script cria a tabela _atendimentos com os atendimentos de pré-natal
+--   realizados na APS (Atenção Primária à Saúde). Inclui cálculos de:
+--   - Idade gestacional no momento da consulta
+--   - Trimestre da consulta
+--   - IMC inicial e IMC da consulta
+--   - Ganho de peso acumulado
+--
+-- DEPENDÊNCIAS:
+--   - Executar APÓS 1_gestacoes.sql (cria _condicoes)
+--   - rj-sms-sandbox.sub_pav_us._condicoes
+--   - rj-sms.saude_historico_clinico.episodio_assistencial
+--
+-- FILTROS:
+--   - Tipo de atendimento: 'Atendimento SOAP'
+--   - Fornecedor: 'vitacare'
+--   - Especialidades profissionais específicas (médicos e enfermeiros ESF)
+--
+-- SAÍDA:
+--   - tipo_atd = 'atd_prenatal'
+--
+-- AUTOR: Monitor Gestante Team
+-- ÚLTIMA ATUALIZAÇÃO: 2026-01
 -- ============================================================================
 
--- Sintaxe para criar ou substituir uma consulta salva (procedimento)
 CREATE OR REPLACE PROCEDURE `rj-sms-sandbox.sub_pav_us.proced_atd_prenatal_aps`()
 
 BEGIN
@@ -125,13 +149,15 @@ altura_fallback AS (
 
 -- ------------------------------------------------------------
 -- CTE: altura_moda_completa
--- Combina altura_preferencial e altura_fallback
+-- Combina altura_preferencial (prioridade) e altura_fallback
+-- CORREÇÃO: Adicionado filtro rn=1 no fallback também
 -- ------------------------------------------------------------
 altura_moda_completa AS (
  SELECT * FROM altura_preferencial WHERE rn = 1
  UNION ALL
  SELECT * FROM altura_fallback
- WHERE id_gestacao NOT IN (SELECT id_gestacao FROM altura_preferencial WHERE rn = 1)
+ WHERE rn = 1  -- CORREÇÃO: Faltava este filtro
+   AND id_gestacao NOT IN (SELECT id_gestacao FROM altura_preferencial WHERE rn = 1)
 ),
 
 -- ------------------------------------------------------------

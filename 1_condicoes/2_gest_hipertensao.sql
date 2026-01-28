@@ -1,10 +1,39 @@
 -- ============================================================================
--- ARQUIVO: condicoes/2_gest_hipertensao.sql
+-- ARQUIVO: 1_condicoes/2_gest_hipertensao.sql
 -- PROPÓSITO: CTEs específicas para hipertensão na gestação
--- TABELA DESTINO: _condicoes (complementa)
+-- TABELA DESTINO: _condicoes (UPDATE)
+-- ============================================================================
+-- 
+-- DESCRIÇÃO:
+--   Este script analisa dados de pressão arterial e prescrições de 
+--   anti-hipertensivos para complementar a tabela _condicoes com informações
+--   de hipertensão gestacional.
+--
+-- DEPENDÊNCIAS:
+--   - Executar APÓS 1_gestacoes.sql (cria _condicoes)
+--   - Executar APÓS todos os scripts de atendimentos (cria _atendimentos)
+--   - rj-sms-sandbox.sub_pav_us._condicoes
+--   - rj-sms-sandbox.sub_pav_us._atendimentos
+--
+-- SAÍDA:
+--   - UPDATE na tabela `_condicoes` com dados de:
+--     * Controle pressórico (qtd_pas_alteradas, teve_pa_grave, etc.)
+--     * Medicamentos anti-hipertensivos (seguros e contraindicados)
+--     * Prescrição de AAS
+--     * Indicador de obesidade
+--
+-- CRITÉRIOS DE PA:
+--   - PA alterada: sistólica ≥ 140 OU diastólica ≥ 90
+--   - PA grave: sistólica > 160 OU diastólica > 110
+--   - PA controlada: sistólica < 140 E diastólica < 90
+--
+-- MEDICAMENTOS SEGUROS NA GESTAÇÃO:
+--   - Metildopa, Hidralazina, Nifedipina
+--
+-- AUTOR: Monitor Gestante Team
+-- ÚLTIMA ATUALIZAÇÃO: 2026-01
 -- ============================================================================
 
--- Sintaxe para criar ou substituir uma consulta salva (procedimento)
 CREATE OR REPLACE PROCEDURE `rj-sms-sandbox.sub_pav_us.proced_cond_hipertensao_gestacional`()
 
 BEGIN
@@ -25,29 +54,31 @@ filtrado AS (
 -- ------------------------------------------------------------
 -- CTE: analise_pressao_arterial
 -- Análise detalhada das medições de PA
+-- MELHORIA: Usa SAFE_CAST para evitar erros com valores inválidos
 -- ------------------------------------------------------------
 analise_pressao_arterial AS (
     SELECT
         f.id_gestacao,
         fapn.data_consulta,
-        CAST(fapn.pressao_sistolica AS INT64) AS pressao_sistolica,
-        CAST(fapn.pressao_diastolica AS INT64) AS pressao_diastolica,
+        -- Usa SAFE_CAST para conversão segura (retorna NULL se falhar)
+        SAFE_CAST(fapn.pressao_sistolica AS INT64) AS pressao_sistolica,
+        SAFE_CAST(fapn.pressao_diastolica AS INT64) AS pressao_diastolica,
         -- PA alterada (≥140/90)
         CASE
-            WHEN CAST(fapn.pressao_sistolica AS INT64) >= 140
-            OR CAST(fapn.pressao_diastolica AS INT64) >= 90 THEN 1
+            WHEN SAFE_CAST(fapn.pressao_sistolica AS INT64) >= 140
+              OR SAFE_CAST(fapn.pressao_diastolica AS INT64) >= 90 THEN 1
             ELSE 0
         END AS pa_alterada,
         -- PA grave (>160/110)
         CASE
-            WHEN CAST(fapn.pressao_sistolica AS INT64) > 160
-            OR CAST(fapn.pressao_diastolica AS INT64) > 110 THEN 1
+            WHEN SAFE_CAST(fapn.pressao_sistolica AS INT64) > 160
+              OR SAFE_CAST(fapn.pressao_diastolica AS INT64) > 110 THEN 1
             ELSE 0
         END AS pa_grave,
         -- PA controlada (<140/90)
         CASE
-            WHEN CAST(fapn.pressao_sistolica AS INT64) < 140
-            AND CAST(fapn.pressao_diastolica AS INT64) < 90 THEN 1
+            WHEN SAFE_CAST(fapn.pressao_sistolica AS INT64) < 140
+             AND SAFE_CAST(fapn.pressao_diastolica AS INT64) < 90 THEN 1
             ELSE 0
         END AS pa_controlada
     FROM
@@ -56,8 +87,14 @@ analise_pressao_arterial AS (
         ON f.id_gestacao = fapn.id_gestacao
         AND fapn.tipo_atd = 'atd_prenatal'
     WHERE
+        -- Filtra apenas registros com valores válidos de PA
         fapn.pressao_sistolica IS NOT NULL
         AND fapn.pressao_diastolica IS NOT NULL
+        AND SAFE_CAST(fapn.pressao_sistolica AS INT64) IS NOT NULL
+        AND SAFE_CAST(fapn.pressao_diastolica AS INT64) IS NOT NULL
+        -- Filtra valores fisiologicamente válidos (PA entre 60 e 300)
+        AND SAFE_CAST(fapn.pressao_sistolica AS INT64) BETWEEN 60 AND 300
+        AND SAFE_CAST(fapn.pressao_diastolica AS INT64) BETWEEN 30 AND 200
 ),
 
 -- ------------------------------------------------------------
@@ -165,6 +202,7 @@ prescricoes_anti_hipertensivos AS (
 -- ------------------------------------------------------------
 -- CTE: classificacao_anti_hipertensivos
 -- Classifica anti-hipertensivos por adequação à gestação
+-- CORREÇÃO: Lógica para listar todos os medicamentos encontrados
 -- ------------------------------------------------------------
 classificacao_anti_hipertensivos AS (
  SELECT
@@ -178,22 +216,20 @@ classificacao_anti_hipertensivos AS (
      THEN 1 ELSE 0
    END AS tem_anti_hipertensivo_seguro,
 
-   -- Listas de medicamentos seguros
-   STRING_AGG(DISTINCT
-     CASE
-       WHEN pah.tem_metildopa = 1 THEN 'METILDOPA'
-       WHEN pah.tem_hidralazina = 1 THEN 'HIDRALAZINA'
-       WHEN pah.tem_nifedipina = 1 THEN 'NIFEDIPINA'
-     END, '; '
+   -- Lista de medicamentos seguros (construída corretamente)
+   -- Usa CONCAT com filtros para montar a lista separada por '; '
+   NULLIF(
+     REGEXP_REPLACE(
+       CONCAT(
+         CASE WHEN pah.tem_metildopa = 1 THEN 'METILDOPA; ' ELSE '' END,
+         CASE WHEN pah.tem_hidralazina = 1 THEN 'HIDRALAZINA; ' ELSE '' END,
+         CASE WHEN pah.tem_nifedipina = 1 THEN 'NIFEDIPINA' ELSE '' END
+       ),
+       r'; $', ''  -- Remove '; ' final se existir
+     ), ''
    ) AS anti_hipertensivos_seguros
 
  FROM prescricoes_anti_hipertensivos pah
- GROUP BY
-   pah.id_gestacao,
-   pah.tem_anti_hipertensivo,
-   pah.tem_metildopa,
-   pah.tem_hidralazina,
-   pah.tem_nifedipina
 ),
 
 -- ------------------------------------------------------------

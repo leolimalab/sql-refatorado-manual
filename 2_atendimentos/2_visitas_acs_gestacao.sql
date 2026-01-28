@@ -1,10 +1,32 @@
 -- ============================================================================
--- ARQUIVO: atendimentos/2_visitas_acs_gestacao.sql
+-- ARQUIVO: 2_atendimentos/2_visitas_acs_gestacao.sql
 -- PROPÓSITO: CTEs para visitas domiciliares do ACS durante gestação
--- TABELA DESTINO: _atendimentos (complementa)
+-- TABELA DESTINO: _atendimentos (INSERT)
+-- ============================================================================
+-- 
+-- DESCRIÇÃO:
+--   Este script adiciona as visitas domiciliares realizadas pelo Agente
+--   Comunitário de Saúde (ACS) à tabela _atendimentos.
+--
+-- DEPENDÊNCIAS:
+--   - Executar APÓS 1_atd_prenatal_aps.sql (cria _atendimentos)
+--   - rj-sms-sandbox.sub_pav_us._condicoes
+--   - rj-sms-sandbox.sub_pav_us._atendimentos
+--   - rj-sms.saude_historico_clinico.episodio_assistencial
+--
+-- FILTROS:
+--   - Fornecedor: 'vitacare'
+--   - Especialidade: 'Agente comunitário de saúde'
+--   - Subtipo: 'Visita Domiciliar'
+--
+-- SAÍDA:
+--   - tipo_atd = 'visita_acs'
+--   - Campos clínicos (peso, PA, etc.) são NULL para visitas ACS
+--
+-- AUTOR: Monitor Gestante Team
+-- ÚLTIMA ATUALIZAÇÃO: 2026-01
 -- ============================================================================
 
--- Sintaxe para criar ou substituir uma consulta salva (procedimento)
 CREATE OR REPLACE PROCEDURE `rj-sms-sandbox.sub_pav_us.proced_atd_visitas_acs`()
 
 BEGIN

@@ -20,34 +20,34 @@ sql_refatorado_manual/
 ### **FASE 1: Condições Base**
 ```sql
 -- 1. Criar tabela base de condições e gestações
-CALL `rj-sms-sandbox.sub_pav_us.proced_condicoes_gestacoes`();
+CALL `rj-sms-sandbox.sub_pav_us.proced_cond_gestacoes`();
 ```
 
 ### **FASE 2: Atendimentos**
 ```sql
 -- 2. Criar tabela de atendimentos pré-natal
-CALL `rj-sms-sandbox.sub_pav_us.proced_atendimentos_prenatal_aps`();
+CALL `rj-sms-sandbox.sub_pav_us.proced_atd_prenatal_aps`();
 
 -- 3. Adicionar visitas ACS
-CALL `rj-sms-sandbox.sub_pav_us.proced_visitas_acs_gestacao`();
+CALL `rj-sms-sandbox.sub_pav_us.proced_atd_visitas_acs`();
 
 -- 4. Adicionar consultas emergenciais
-CALL `rj-sms-sandbox.sub_pav_us.proced_consultas_emergenciais`();
+CALL `rj-sms-sandbox.sub_pav_us.proced_atd_consultas_emergenciais`();
 
 -- 5. Adicionar encaminhamentos
-CALL `rj-sms-sandbox.sub_pav_us.proced_encaminhamentos`();
+CALL `rj-sms-sandbox.sub_pav_us.proced_atd_encaminhamentos`();
 ```
 
 ### **FASE 2.5: Complementar Condições**
 ```sql
 -- 6. Complementar com dados de hipertensão (APÓS atendimentos)
-CALL `rj-sms-sandbox.sub_pav_us.proced_hipertensao_gestacional`();
+CALL `rj-sms-sandbox.sub_pav_us.proced_cond_hipertensao_gestacional`();
 ```
 
 ### **FASE 3: View Consolidada**
 ```sql
 -- 7. Gerar view final consolidada
-CALL `rj-sms-sandbox.sub_pav_us.proced_linha_tempo_consolidada`();
+CALL `rj-sms-sandbox.sub_pav_us.proced_view_linha_tempo_consolidada`();
 ```
 
 ## 📊 Tabelas Geradas

@@ -1,10 +1,37 @@
 -- ============================================================================
--- ARQUIVO: atendimentos/4_encaminhamentos.sql
+-- ARQUIVO: 2_atendimentos/4_encaminhamentos.sql
 -- PROPÓSITO: CTEs para encaminhamentos SISREG e SER durante gestação
--- TABELA DESTINO: _atendimentos (complementa)
+-- TABELA DESTINO: _atendimentos (INSERT)
+-- ============================================================================
+-- 
+-- DESCRIÇÃO:
+--   Este script adiciona os encaminhamentos (SISREG e SER) à tabela 
+--   _atendimentos. Os encaminhamentos são importantes para rastrear
+--   o acesso ao pré-natal de alto risco.
+--
+-- DEPENDÊNCIAS:
+--   - Executar APÓS 1_atd_prenatal_aps.sql (cria _atendimentos)
+--   - rj-sms-sandbox.sub_pav_us._condicoes
+--   - rj-sms-sandbox.sub_pav_us._atendimentos
+--   - rj-sms.brutos_sisreg_api.solicitacoes (SISREG)
+--   - rj-sms-sandbox.sub_pav_us.BD SER PRÉ NATAL 2024_2025AGO (SER)
+--   - rj-sms.saude_historico_clinico.paciente
+--
+-- FONTES DE DADOS:
+--   - SISREG: Sistema de Regulação do SUS
+--     * Procedimentos: 0703844, 0703886, 0737024, 0710301, 0710128
+--   - SER: Sistema de Encaminhamento e Regulação
+--
+-- SAÍDA:
+--   - tipo_atd = 'encaminhamento'
+--   - profissional_categoria = 'Médico' (SISREG) ou 'Especialista' (SER)
+--
+-- NOTA: Apenas a primeira solicitação de cada gestação é incluída (rn=1)
+--
+-- AUTOR: Monitor Gestante Team
+-- ÚLTIMA ATUALIZAÇÃO: 2026-01
 -- ============================================================================
 
--- Sintaxe para criar ou substituir uma consulta salva (procedimento)
 CREATE OR REPLACE PROCEDURE `rj-sms-sandbox.sub_pav_us.proced_atd_encaminhamentos`()
 
 BEGIN

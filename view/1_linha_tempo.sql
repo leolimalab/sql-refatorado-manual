@@ -3,8 +3,45 @@
 -- PROPÓSITO: View consolidada principal - linha do tempo das gestações
 -- TABELA DESTINO: _view
 -- ============================================================================
+-- 
+-- DESCRIÇÃO:
+--   Este script cria a view consolidada final que combina todas as informações
+--   das gestações, incluindo:
+--   - Dados básicos da gestante e da gestação
+--   - Condições médicas (diabetes, hipertensão, HIV, sífilis, etc.)
+--   - Resumo de atendimentos (consultas, visitas ACS)
+--   - Encaminhamentos (SISREG e SER)
+--   - Prescrições (AAS, ácido fólico, carbonato de cálcio, anti-hipertensivos)
+--   - Fatores de risco
+--   - Eventos de parto
+--
+-- DEPENDÊNCIAS:
+--   - Executar APÓS todos os scripts anteriores:
+--     * 1_condicoes/1_gestacoes.sql
+--     * 1_condicoes/2_gest_hipertensao.sql
+--     * 2_atendimentos/1_atd_prenatal_aps.sql
+--     * 2_atendimentos/2_visitas_acs_gestacao.sql
+--     * 2_atendimentos/3_consultas_emergenciais.sql
+--     * 2_atendimentos/4_encaminhamentos.sql
+--   - rj-sms-sandbox.sub_pav_us._condicoes
+--   - rj-sms-sandbox.sub_pav_us._atendimentos
+--   - rj-sms-sandbox.sub_pav_us._cids_risco_gestacional_cat_encam
+--   - rj-sms.saude_historico_clinico.paciente
+--   - rj-sms.saude_historico_clinico.episodio_assistencial
+--   - rj-sms.saude_estoque.movimento
+--   - rj-sms.saude_dados_mestres.estabelecimento
+--
+-- FILTROS:
+--   - fase_atual IN ('Gestação', 'Puerpério')
+--
+-- SAÍDA:
+--   - Tabela `_view` com todas as informações consolidadas
+--   - Aproximadamente 111 colunas
+--
+-- AUTOR: Monitor Gestante Team
+-- ÚLTIMA ATUALIZAÇÃO: 2026-01
+-- ============================================================================
 
--- Sintaxe para criar ou substituir uma consulta salva (procedimento)
 CREATE OR REPLACE PROCEDURE `rj-sms-sandbox.sub_pav_us.proced_view_linha_tempo_consolidada`()
 
 BEGIN
@@ -985,14 +1022,15 @@ final AS (
         LEFT JOIN fatores_risco_categorias frc ON f.id_gestacao = frc.id_gestacao
         LEFT JOIN mudanca_equipe me ON f.id_gestacao = me.id_gestacao
         LEFT JOIN partos_associados pa ON f.id_gestacao = pa.id_gestacao
+        -- CORREÇÃO: Filtro unificado - incluir tanto Gestação quanto Puerpério
+        -- O filtro anterior era contraditório (linha 989 excluía Puerpério, linha 995 incluía)
         WHERE 
-            f.fase_atual = 'Gestação'
+            f.fase_atual IN ('Gestação', 'Puerpério')
 )
 
 SELECT
     *
-FROM final
-WHERE fase_atual IN ('Gestação', 'Puerpério');
+FROM final;
 
 END;
 
