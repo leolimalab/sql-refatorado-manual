@@ -1,0 +1,1114 @@
+# FLUXO VISUAL - PROCEDIMENTO 8: MONITORAMENTO DE SÍFILIS
+
+## Visão Geral do Pipeline
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                   PROCEDIMENTO 8 - SÍFILIS                          │
+│           (Algoritmo Especializado de Tratamento Completo)          │
+└─────────────────────────────────────────────────────────────────────┘
+
+ENTRADAS:                         PROCESSAMENTO:                    SAÍDA:
+┌──────────────────┐             ┌────────────────┐              ┌──────────────┐
+│ episodio_        │             │ RECONSTRUÇÃO   │              │ _sifilis     │
+│ assistencial     │────────────>│ DE CICLOS      │─────────────>│              │
+│ (CIDs A51, A53,  │             │                │              │ • Ciclos     │
+│  O98.1)          │             │ • Agrupamento  │              │ • Doses      │
+│                  │             │ • Intervalos   │              │ • Status     │
+│ dispensacao_     │             │ • Qualidade    │              │ • VDRL       │
+│ medicamentos     │────────────>│                │              │ • Parceiro   │
+│ (Benzetacil)     │             │ VÍNCULO VDRL   │              └──────────────┘
+│                  │             │                │
+│ resultado_exames │────────────>│ • Diagnóstico  │
+│ (VDRL)           │             │ • Controle     │
+│                  │             │                │
+│ prontuario       │────────────>│ PARCEIRO       │
+│ (dados parceiro) │             │ • Tratamento   │
+└──────────────────┘             └────────────────┘
+
+DESAFIO CLÍNICO:
+┌────────────────────────────────────────────────────────────────────┐
+│ ⚕️ Tratamento = 3 doses de Benzetacil com intervalos de 7 dias    │
+│ ⚠️ Dose atrasada >14 dias = Ciclo incompleto/abandonado           │
+│ 🔄 Paciente pode ter múltiplos ciclos (reinfecção/retratamento)   │
+│ 🧪 VDRL antes (diagnóstico) e 30+ dias depois (controle de cura)  │
+│ 👥 Parceiro não tratado = Alto risco de reinfecção                │
+└────────────────────────────────────────────────────────────────────┘
+
+COMPLEXIDADE: ⭐⭐⭐⭐⭐ (Muito Alta - Algoritmo Temporal Especializado)
+DEPENDÊNCIAS: ✅ episodio_assistencial, dispensacao_meds, resultados_exames
+TEMPO EXECUÇÃO: ~2-5 minutos (reconstrução temporal complexa)
+```
+
+---
+
+## Pipeline Completo de Processamento
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│                  FLUXO SEQUENCIAL DE 6 ETAPAS                        │
+└──────────────────────────────────────────────────────────────────────┘
+
+ETAPA 1: IDENTIFICAÇÃO DE CASOS
+┌─────────────────────────────────────────────────────┐
+│ diagnosticos_raw                                    │
+│ • Buscar CIDs de sífilis (A51.*, A53.*, O98.1)     │
+│ • Fontes: episodio_assistencial + JSON bruto       │
+│ • Gestações com diagnóstico confirmado             │
+└─────────────────────────────────────────────────────┘
+                        │
+                        ▼
+ETAPA 2: EXTRAÇÃO DE DISPENSAÇÕES
+┌─────────────────────────────────────────────────────┐
+│ dispensacoes_benzetacil                             │
+│ • Filtrar: Benzilpenicilina Benzatina (Benzetacil) │
+│ • Ordenar por id_paciente + data_dispensacao        │
+│ • Preparar para agrupamento em ciclos              │
+└─────────────────────────────────────────────────────┘
+                        │
+                        ▼
+ETAPA 3: RECONSTRUÇÃO DE CICLOS
+┌─────────────────────────────────────────────────────┐
+│ dispensacoes_com_ciclo                              │
+│ • Calcular intervalo entre doses                   │
+│ • Regra: Intervalo >21 dias = NOVO CICLO          │
+│ • Numerar doses dentro de cada ciclo (1, 2, 3)    │
+└─────────────────────────────────────────────────────┘
+                        │
+                        ▼
+ETAPA 4: AVALIAÇÃO DE QUALIDADE
+┌─────────────────────────────────────────────────────┐
+│ status_tratamento_dispensado                        │
+│ • Completo: 3 doses                                │
+│ • Em Curso: <3 doses E última <14 dias            │
+│ • Incompleto: <3 doses E última >14 dias          │
+└─────────────────────────────────────────────────────┘
+                        │
+                        ▼
+ETAPA 5: VÍNCULO COM VDRL
+┌─────────────────────────────────────────────────────┐
+│ vdrl_associado                                      │
+│ • VDRL Diagnóstico: Antes/dia da 1ª dose          │
+│ • VDRL Controle: ≥30 dias após última dose        │
+│ • Comparar titulações (queda = cura)              │
+└─────────────────────────────────────────────────────┘
+                        │
+                        ▼
+ETAPA 6: STATUS FINAL + PARCEIRO
+┌─────────────────────────────────────────────────────┐
+│ status_final_gestante + dados_parceiro              │
+│ • Avaliação semântica do cuidado                   │
+│ • Dados de tratamento do parceiro                  │
+│ • Alerta para pendências ou falhas                 │
+└─────────────────────────────────────────────────────┘
+                        │
+                        ▼
+                  TABELA _sifilis
+```
+
+---
+
+## Etapa 1: Identificação de Casos de Sífilis
+
+### Busca Agressiva por Diagnósticos
+
+```
+FONTES DE DADOS:
+┌─────────────────────────────────────────────────────────────────┐
+│ FONTE 1: episodio_assistencial (Estruturado)                   │
+│ ┌───────────────────────────────────────────────────────────┐  │
+│ │ SELECT episodio                                           │  │
+│ │ FROM episodio_assistencial                                │  │
+│ │ JOIN UNNEST(condicoes) AS c                               │  │
+│ │ WHERE c.id LIKE 'A51%'  -- Sífilis precoce               │  │
+│ │    OR c.id LIKE 'A53%'  -- Outras formas                 │  │
+│ │    OR c.id = 'O981'     -- Sífilis na gravidez           │  │
+│ └───────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+                        │
+                        ▼
+┌─────────────────────────────────────────────────────────────────┐
+│ FONTE 2: atendimento (JSON Bruto - Fallback)                   │
+│ ┌───────────────────────────────────────────────────────────┐  │
+│ │ SELECT atendimento                                        │  │
+│ │ FROM atendimento                                          │  │
+│ │ WHERE JSON contém CID de sífilis em arrays aninhados     │  │
+│ └───────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+                        │
+                        ▼
+                   UNION DISTINCT
+                        │
+                        ▼
+              diagnosticos_raw (CTE)
+```
+
+### Lógica de Decisão - Busca Híbrida
+
+```
+                    ┌──────────────────────┐
+                    │ Buscar Diagnósticos  │
+                    └──────────┬───────────┘
+                               │
+                ┌──────────────┴──────────────┐
+                │                             │
+        ┌───────▼────────┐           ┌────────▼───────┐
+        │ Episódio       │           │ Atendimento    │
+        │ Assistencial   │           │ JSON Bruto     │
+        └───────┬────────┘           └────────┬───────┘
+                │                             │
+                │ Filtro CID:                 │ Parse JSON:
+                │ • A51.*                     │ • Procurar em
+                │ • A53.*                     │   arrays nested
+                │ • O981                      │ • Extrair CIDs
+                │                             │
+                └──────────────┬──────────────┘
+                               │
+                    ┌──────────▼──────────┐
+                    │ Casos Identificados │
+                    │ (UNION DISTINCT)    │
+                    └─────────────────────┘
+```
+
+---
+
+## Etapa 2 e 3: Reconstrução de Ciclos de Tratamento
+
+### Algoritmo de Agrupamento Temporal
+
+```
+DISPENSAÇÕES BRUTAS (Ordenadas por data):
+┌──────────────────────────────────────────────────────────────────┐
+│ ID_Paciente: 12345                                               │
+│ ┌────────┬──────────────┬─────────────┬──────────────────┐      │
+│ │ Data   │ Medicamento  │ Intervalo   │ Ação do Algoritmo│      │
+│ ├────────┼──────────────┼─────────────┼──────────────────┤      │
+│ │ 01/Jan │ Benzetacil   │ N/A (1ª)    │ NOVO CICLO (C1)  │◄──┐  │
+│ │ 08/Jan │ Benzetacil   │ 7 dias      │ C1 - Dose 2      │   │  │
+│ │ 15/Jan │ Benzetacil   │ 7 dias      │ C1 - Dose 3      │   │  │
+│ │        │              │             │ ✅ C1 Completo    │   │  │
+│ │ 01/Jun │ Benzetacil   │ 137 dias ⚠️ │ NOVO CICLO (C2)  │◄──┼──┐
+│ │ 09/Jun │ Benzetacil   │ 8 dias      │ C2 - Dose 2      │   │  │
+│ │        │              │ +14 dias... │ ⚠️ C2 Incompleto  │   │  │
+│ └────────┴──────────────┴─────────────┴──────────────────┘      │
+└──────────────────────────────────────────────────────────────────┘
+    Regra:                                    Quebra de ciclo:
+    Intervalo >21 dias → NOVO CICLO          137 dias > 21 ✓
+```
+
+### Lógica de Window Function
+
+```sql
+-- Pseudocódigo do Algoritmo de Ciclos
+WITH dispensacoes_ordenadas AS (
+    SELECT
+        id_paciente,
+        data_dispensacao,
+        LAG(data_dispensacao) OVER (
+            PARTITION BY id_paciente
+            ORDER BY data_dispensacao
+        ) AS data_dose_anterior
+    FROM dispensacoes_benzetacil
+),
+calculo_intervalos AS (
+    SELECT
+        *,
+        DATE_DIFF(data_dispensacao, data_dose_anterior, DAY) AS intervalo_dias,
+        CASE
+            WHEN data_dose_anterior IS NULL THEN 1  -- Primeira dose
+            WHEN DATE_DIFF(data_dispensacao, data_dose_anterior, DAY) > 21 THEN 1
+            ELSE 0
+        END AS marca_novo_ciclo
+    FROM dispensacoes_ordenadas
+),
+numeracao_ciclos AS (
+    SELECT
+        *,
+        SUM(marca_novo_ciclo) OVER (
+            PARTITION BY id_paciente
+            ORDER BY data_dispensacao
+            ROWS UNBOUNDED PRECEDING
+        ) AS numero_ciclo,
+        ROW_NUMBER() OVER (
+            PARTITION BY id_paciente, numero_ciclo
+            ORDER BY data_dispensacao
+        ) AS numero_dose_no_ciclo
+    FROM calculo_intervalos
+)
+SELECT * FROM numeracao_ciclos;
+```
+
+### Visualização do Agrupamento
+
+```
+LINHA DO TEMPO DE DISPENSAÇÕES:
+════════════════════════════════════════════════════════════════════
+
+JAN          FEV          MAR          ABR          MAI          JUN
+│            │            │            │            │            │
+├─●──────────┤            │            │            │            │
+│ 01/Jan     │            │            │            │            │
+│ Dose 1     │            │            │            │            │
+│            │            │            │            │            │
+├────────●───┤            │            │            │            │
+│        08/Jan           │            │            │            │
+│        Dose 2           │            │            │            │
+│            │            │            │            │            │
+├────────────┼──●─────────┤            │            │            │
+│            │  15/Jan    │            │            │            │
+│            │  Dose 3    │            │            │            │
+│            │  ✅ C1 OK  │            │            │            │
+│            │            │            │            │            │
+│◄───────────── CICLO 1 COMPLETO ──────────────────►│            │
+│            │            │            │            │            │
+│                   GAP DE 137 DIAS (>21)                        │
+│            │            │            │            │            │
+├────────────┼────────────┼────────────┼────────────┼─●──────────┤
+│            │            │            │            │ 01/Jun     │
+│            │            │            │            │ Dose 1     │
+│            │            │            │            │            │
+├────────────┼────────────┼────────────┼────────────┼────────●───┤
+│            │            │            │            │        09/Jun
+│            │            │            │            │        Dose 2
+│            │            │            │            │            │
+│            │            │            │            │◄─── CICLO 2 ───►
+│            │            │            │            │   ⚠️ Incompleto
+│            │            │            │            │   (Falta Dose 3)
+════════════════════════════════════════════════════════════════════
+```
+
+---
+
+## Etapa 4: Avaliação de Qualidade do Ciclo
+
+### Regras de Classificação
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│              MATRIZ DE AVALIAÇÃO DE CICLO                        │
+└──────────────────────────────────────────────────────────────────┘
+
+ENTRADA: [Número de Doses, Dias desde última dose]
+         │
+         ▼
+    ┌────────────────┐
+    │ Qtd Doses = 3? │
+    └────┬───────────┘
+         │
+    ┌────┴────┐
+    │         │
+┌───▼──┐  ┌───▼──┐
+│ SIM  │  │ NÃO  │
+│      │  │      │
+│ ✅   │  └───┬──┘
+│COMPL.│      │
+└──────┘      │
+              ▼
+         ┌─────────────────────┐
+         │ Última dose foi há  │
+         │ quanto tempo?       │
+         └─────────┬───────────┘
+                   │
+         ┌─────────┴─────────┐
+         │                   │
+    ┌────▼────┐         ┌────▼────┐
+    │ ≤14 dias│         │ >14 dias│
+    │         │         │         │
+    │ 🔄      │         │ ❌      │
+    │EM CURSO│         │INCOMPL. │
+    └─────────┘         └─────────┘
+
+LEGENDAS:
+✅ COMPLETO: 3 doses → Ciclo encerrado com sucesso
+🔄 EM CURSO: <3 doses E última ≤14 dias → Ainda no prazo
+❌ INCOMPLETO: <3 doses E última >14 dias → Abandonado
+```
+
+### Exemplo de Casos Reais
+
+```
+┌─────────┬────────┬───────────────┬──────────────────────┐
+│ CICLO   │ DOSES  │ ÚLTIMA DOSE   │ STATUS               │
+├─────────┼────────┼───────────────┼──────────────────────┤
+│ Ciclo 1 │ 3      │ 15/01 (há 45d)│ ✅ COMPLETO          │
+├─────────┼────────┼───────────────┼──────────────────────┤
+│ Ciclo 2 │ 2      │ 05/06 (há 5d) │ 🔄 EM CURSO          │
+│         │        │               │ (Aguardando Dose 3)  │
+├─────────┼────────┼───────────────┼──────────────────────┤
+│ Ciclo 3 │ 1      │ 10/04 (há 62d)│ ❌ INCOMPLETO        │
+│         │        │               │ (Abandonado)         │
+├─────────┼────────┼───────────────┼──────────────────────┤
+│ Ciclo 4 │ 2      │ 20/05 (há 23d)│ ❌ INCOMPLETO        │
+│         │        │               │ (Prazo expirado)     │
+└─────────┴────────┴───────────────┴──────────────────────┘
+```
+
+---
+
+## Etapa 5: Vínculo Temporal com Exames VDRL
+
+### Algoritmo de Associação
+
+```
+LINHA DO TEMPO INTEGRADA:
+════════════════════════════════════════════════════════════════════
+
+                    ┌── CICLO DE TRATAMENTO ──┐
+                    │                         │
+        VDRL 1      │  Dose 1  Dose 2  Dose 3 │        VDRL 2
+          ●         │    ●       ●       ●    │          ●
+          │         │    │       │       │    │          │
+    ──────┴─────────┴────┴───────┴───────┴────┴──────────┴────────►
+          │         │                         │          │     tempo
+          │         │                         │          │
+    DIAGNÓSTICO     │                         │    CONTROLE DE CURA
+    (Antes/Dia 1ª)  │                         │    (≥30 dias após)
+                    │                         │
+                    └─────────────────────────┘
+                            21 dias
+```
+
+### Regras de Vínculo
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                   LÓGICA DE VÍNCULO VDRL                         │
+└──────────────────────────────────────────────────────────────────┘
+
+PARA CADA CICLO:
+
+1️⃣ VDRL DIAGNÓSTICO (Linha de Base):
+   ┌─────────────────────────────────────────────────────┐
+   │ Buscar VDRL mais recente onde:                      │
+   │ • data_vdrl ≤ data_primeira_dose                    │
+   │                                                     │
+   │ Propósito: Titulação inicial para comparação       │
+   │ Exemplo: "VDRL 1:32" antes do tratamento           │
+   └─────────────────────────────────────────────────────┘
+
+2️⃣ VDRL CONTROLE (Monitoramento de Cura):
+   ┌─────────────────────────────────────────────────────┐
+   │ Buscar primeiro VDRL onde:                          │
+   │ • data_vdrl ≥ (data_ultima_dose + 30 dias)         │
+   │                                                     │
+   │ Propósito: Verificar queda de titulação            │
+   │ Esperado: ≥4x redução (ex: 1:32 → 1:8 ou menor)   │
+   └─────────────────────────────────────────────────────┘
+
+3️⃣ INTERPRETAÇÃO:
+   ┌─────────────────────────────────────────────────────┐
+   │ SE titulação_controle < (titulação_diagnóstico / 4):│
+   │    ✅ Cura sorológica confirmada                    │
+   │ SENÃO SE controle inexiste:                         │
+   │    ⚠️ Pendência de monitoramento                    │
+   │ SENÃO:                                              │
+   │    ❌ Possível falha terapêutica (reavaliar)        │
+   └─────────────────────────────────────────────────────┘
+```
+
+### Exemplo Temporal Completo
+
+```
+CASO CLÍNICO: Gestante com sífilis tratada e curada
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+DEZEMBRO          JANEIRO              FEVEREIRO          MARÇO
+│                 │                    │                  │
+├─●───────────────┤                    │                  │
+│ 28/Dez          │                    │                  │
+│ VDRL: 1:64      │                    │                  │
+│ (Diagnóstico)   │                    │                  │
+│                 │                    │                  │
+├─────────────────┼─●──────────────────┤                  │
+│                 │ 05/Jan             │                  │
+│                 │ Benzetacil Dose 1  │                  │
+│                 │                    │                  │
+├─────────────────┼────────────●───────┤                  │
+│                 │            12/Jan  │                  │
+│                 │            Dose 2  │                  │
+│                 │                    │                  │
+├─────────────────┼────────────────────┼──●───────────────┤
+│                 │                    │  19/Jan          │
+│                 │                    │  Dose 3          │
+│                 │                    │  ✅ Ciclo OK     │
+│                 │                    │                  │
+├─────────────────┼────────────────────┼──────────────────┼──●───
+│                 │                    │                  │  25/Fev
+│                 │                    │                  │  VDRL: 1:8
+│                 │                    │                  │  (Controle)
+│                 │                    │                  │
+│                 │◄──── CICLO ────────►│◄── 30+ dias ───►│  ✅ CURA
+│                 │     (21 dias)      │   (37 dias)      │  (64→8)
+│                 │                    │                  │  Redução 8x
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ANÁLISE:
+• VDRL Diagnóstico: 1:64 (antes do tratamento)
+• Tratamento: 3 doses com intervalos corretos
+• VDRL Controle: 1:8 (37 dias após última dose)
+• Queda de titulação: 64 → 8 = 8x (>4x esperado)
+• CONCLUSÃO: ✅ Tratamento adequado com cura sorológica
+```
+
+---
+
+## Etapa 6: Status Final e Avaliação do Parceiro
+
+### Matriz de Status Semântico
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│              ALGORITMO DE STATUS FINAL                           │
+└──────────────────────────────────────────────────────────────────┘
+
+ENTRADA: [Diagnóstico, Doses, Intervalos, VDRL, Parceiro]
+         │
+         ▼
+    ┌────────────────────┐
+    │ Tem Diagnóstico    │
+    │ Registrado?        │
+    └────┬───────────────┘
+         │
+    ┌────┴────┐
+    │         │
+┌───▼──┐  ┌───▼──┐
+│ NÃO  │  │ SIM  │
+│      │  │      │
+│ ⚠️   │  └───┬──┘
+│ALERT.│      │
+└──────┘      ▼
+         ┌─────────────────┐
+         │ Qtd Doses = 3?  │
+         └────┬────────────┘
+              │
+         ┌────┴────┐
+         │         │
+    ┌────▼──┐  ┌───▼──┐
+    │ NÃO   │  │ SIM  │
+    │       │  │      │
+    │ ❌    │  └───┬──┘
+    │INCOMPL│      │
+    └───────┘      ▼
+              ┌────────────────┐
+              │ Intervalos OK? │
+              │ (7-9 dias)     │
+              └────┬───────────┘
+                   │
+              ┌────┴────┐
+              │         │
+         ┌────▼──┐  ┌───▼──┐
+         │ NÃO   │  │ SIM  │
+         │       │  │      │
+         │ ❌    │  └───┬──┘
+         │INTERV.│      │
+         └───────┘      ▼
+                   ┌────────────────┐
+                   │ Tem VDRL       │
+                   │ Controle?      │
+                   └────┬───────────┘
+                        │
+                   ┌────┴────┐
+                   │         │
+              ┌────▼──┐  ┌───▼──┐
+              │ NÃO   │  │ SIM  │
+              │       │  │      │
+              │ ⚠️    │  │ ✅   │
+              │PEND.  │  │ADEQU.│
+              └───────┘  └──────┘
+
+LEGENDAS DOS STATUS:
+✅ Cuidado Adequado: Tratamento + VDRL + Intervalos OK
+⚠️ Alerta: Tratamento sem diagnóstico OU sem VDRL controle
+❌ Falha: Tratamento incompleto OU intervalos incorretos
+```
+
+### Tabela de Status Possíveis
+
+```
+┌──────────────────────┬────────────────────────────────────────────┐
+│ STATUS FINAL         │ CONDIÇÃO                                   │
+├──────────────────────┼────────────────────────────────────────────┤
+│ ✅ CUIDADO ADEQUADO  │ • 3 doses com intervalos 7-9 dias         │
+│                      │ • VDRL diagnóstico + controle              │
+│                      │ • Queda de titulação ≥4x                   │
+│                      │ • Diagnóstico registrado                   │
+├──────────────────────┼────────────────────────────────────────────┤
+│ ⚠️ ALERTA: SEM       │ • Benzetacil dispensado                    │
+│    DIAGNÓSTICO       │ • Mas sem CID de sífilis registrado        │
+│                      │ • (Possível falha de documentação)         │
+├──────────────────────┼────────────────────────────────────────────┤
+│ ❌ FALHA: TRATAMENTO │ • <3 doses E >14 dias desde última         │
+│    INCOMPLETO        │ • Ciclo abandonado                         │
+│                      │ • Risco de não cura                        │
+├──────────────────────┼────────────────────────────────────────────┤
+│ ❌ FALHA: INTERVALO  │ • 3 doses mas intervalos >9 dias           │
+│    INCORRETO         │ • Eficácia pode estar comprometida         │
+├──────────────────────┼────────────────────────────────────────────┤
+│ ⚠️ PENDÊNCIA:        │ • Tratamento completo e adequado           │
+│    MONITORAMENTO     │ • Mas sem VDRL ≥30 dias pós-tratamento    │
+│    DE CURA           │ • Necessário agendar exame                 │
+├──────────────────────┼────────────────────────────────────────────┤
+│ 🔄 EM CURSO          │ • <3 doses E ≤14 dias desde última         │
+│                      │ • Ainda no prazo para completar            │
+└──────────────────────┴────────────────────────────────────────────┘
+```
+
+### Avaliação do Parceiro
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                   EXTRAÇÃO DE DADOS DO PARCEIRO                  │
+└──────────────────────────────────────────────────────────────────┘
+
+FONTE: Prontuário da gestante (campos específicos)
+┌─────────────────────────────────────────────────────┐
+│ dados_parceiro_raw                                  │
+│                                                     │
+│ Campos Extraídos:                                   │
+│ • parceiro_tratado (Sim/Não)                       │
+│ • parceiro_fez_teste_rapido (Sim/Não)             │
+│ • parceiro_qtd_doses_benzetacil (0, 1, 2, 3)      │
+│ • parceiro_resultado_teste (Reagente/Não Reagente)│
+└─────────────────────────────────────────────────────┘
+                        │
+                        ▼
+                 CLASSIFICAÇÃO:
+┌─────────────────────────────────────────────────────┐
+│ ✅ ADEQUADO: Parceiro tratado com 3 doses           │
+│ ⚠️ PARCIAL: Parceiro tratado mas <3 doses          │
+│ ❌ NÃO TRATADO: Parceiro não tratou                 │
+│ ⚠️ SEM INFORMAÇÃO: Campo não preenchido             │
+└─────────────────────────────────────────────────────┘
+
+IMPORTÂNCIA EPIDEMIOLÓGICA:
+┌─────────────────────────────────────────────────────┐
+│ 🔄 Parceiro não tratado = Alto risco de reinfecção  │
+│ 👥 Meta OMS: >90% de parceiros tratados             │
+│ 📊 Indicador de qualidade do pré-natal              │
+└─────────────────────────────────────────────────────┘
+```
+
+---
+
+## Fluxo Completo Integrado
+
+### Visão End-to-End de Um Caso
+
+```
+JORNADA COMPLETA: Gestante com Sífilis
+════════════════════════════════════════════════════════════════════
+
+1️⃣ IDENTIFICAÇÃO (Diagnóstico)
+   ┌─────────────────────────────────────────┐
+   │ 15/Dez - Atendimento Pré-Natal          │
+   │ CID Registrado: A53.9 (Sífilis NE)      │
+   │ Status: 🆕 CASO IDENTIFICADO            │
+   └─────────────────────────────────────────┘
+                    ↓
+2️⃣ LINHA DE BASE (VDRL Diagnóstico)
+   ┌─────────────────────────────────────────┐
+   │ 18/Dez - Coleta de VDRL                 │
+   │ Resultado: 1:32 (Reagente)              │
+   │ Status: 🧪 TITULAÇÃO INICIAL            │
+   └─────────────────────────────────────────┘
+                    ↓
+3️⃣ INÍCIO DO TRATAMENTO (Ciclo 1)
+   ┌─────────────────────────────────────────┐
+   │ 20/Dez - Benzetacil 2.400.000 UI        │
+   │ Dose: 1/3                               │
+   │ Status: 🔄 TRATAMENTO INICIADO          │
+   └─────────────────────────────────────────┘
+                    ↓
+   ┌─────────────────────────────────────────┐
+   │ 27/Dez - Benzetacil (Intervalo: 7 dias) │
+   │ Dose: 2/3                               │
+   │ Status: 🔄 EM CURSO                     │
+   └─────────────────────────────────────────┘
+                    ↓
+   ┌─────────────────────────────────────────┐
+   │ 03/Jan - Benzetacil (Intervalo: 7 dias) │
+   │ Dose: 3/3                               │
+   │ Status: ✅ CICLO COMPLETO               │
+   └─────────────────────────────────────────┘
+                    ↓
+4️⃣ MONITORAMENTO (VDRL Controle)
+   ┌─────────────────────────────────────────┐
+   │ 08/Fev - Coleta VDRL (36 dias pós)     │
+   │ Resultado: 1:4 (Queda de 32→4 = 8x)   │
+   │ Status: ✅ CURA SOROLÓGICA              │
+   └─────────────────────────────────────────┘
+                    ↓
+5️⃣ PARCEIRO (Tratamento Concomitante)
+   ┌─────────────────────────────────────────┐
+   │ Parceiro: Tratado (Sim)                 │
+   │ Doses: 3 (Completo)                     │
+   │ Status: ✅ PARCEIRO ADEQUADAMENTE       │
+   │         TRATADO                         │
+   └─────────────────────────────────────────┘
+                    ↓
+6️⃣ STATUS FINAL
+   ╔═════════════════════════════════════════╗
+   ║ ✅ CUIDADO ADEQUADO                     ║
+   ║                                         ║
+   ║ • Diagnóstico: ✓                        ║
+   ║ • Tratamento: ✓ (3 doses, int. OK)     ║
+   ║ • VDRL Controle: ✓ (Cura confirmada)   ║
+   ║ • Parceiro: ✓ (Tratado adequadamente)  ║
+   ╚═════════════════════════════════════════╝
+```
+
+---
+
+## Exemplo de Dados de Saída
+
+### Estrutura da Tabela _sifilis
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                      ESQUEMA DA TABELA _sifilis                  │
+└──────────────────────────────────────────────────────────────────┘
+
+CAMPOS PRINCIPAIS:
+┌─────────────────────────┬──────────────┬─────────────────────────┐
+│ CAMPO                   │ TIPO         │ DESCRIÇÃO               │
+├─────────────────────────┼──────────────┼─────────────────────────┤
+│ id_gestacao             │ STRING       │ FK para _linha_tempo    │
+│ id_paciente             │ STRING       │ Identificador           │
+│ cpf                     │ STRING       │ CPF da gestante         │
+│                         │              │                         │
+│ --- DIAGNÓSTICO ---     │              │                         │
+│ data_diagnostico        │ DATE         │ Data do CID             │
+│ cid_diagnostico         │ STRING       │ A51/A53/O981            │
+│ fonte_diagnostico       │ STRING       │ episodio/atendimento    │
+│                         │              │                         │
+│ --- TRATAMENTO ---      │              │                         │
+│ numero_ciclo            │ INTEGER      │ 1, 2, 3...              │
+│ data_primeira_dose      │ DATE         │ Início do ciclo         │
+│ data_ultima_dose        │ DATE         │ Última dose do ciclo    │
+│ qtd_doses               │ INTEGER      │ 1, 2 ou 3               │
+│ intervalo_medio_dias    │ FLOAT        │ Média entre doses       │
+│ status_ciclo            │ STRING       │ COMPLETO/CURSO/INCOMPL. │
+│                         │              │                         │
+│ --- VDRL ---            │              │                         │
+│ vdrl_diagnostico_data   │ DATE         │ Data do VDRL inicial    │
+│ vdrl_diagnostico_tit    │ STRING       │ Ex: "1:32"              │
+│ vdrl_controle_data      │ DATE         │ Data do VDRL controle   │
+│ vdrl_controle_tit       │ STRING       │ Ex: "1:4"               │
+│ reducao_titulacao       │ FLOAT        │ Fator de redução (8x)   │
+│                         │              │                         │
+│ --- PARCEIRO ---        │              │                         │
+│ parceiro_tratado        │ BOOLEAN      │ TRUE/FALSE              │
+│ parceiro_qtd_doses      │ INTEGER      │ 0, 1, 2 ou 3            │
+│ parceiro_teste_rapido   │ BOOLEAN      │ Fez teste?              │
+│                         │              │                         │
+│ --- STATUS FINAL ---    │              │                         │
+│ status_final            │ STRING       │ Classificação semântica │
+│ pendencias              │ STRING       │ Lista de pendências     │
+│ alertas                 │ STRING       │ Alertas clínicos        │
+└─────────────────────────┴──────────────┴─────────────────────────┘
+```
+
+### Exemplo de Registro Real
+
+```sql
+-- Exemplo de linha na tabela _sifilis
+{
+  "id_gestacao": "G-2024-12345",
+  "id_paciente": "PAC-98765",
+  "cpf": "111.222.333-44",
+
+  "data_diagnostico": "2024-12-15",
+  "cid_diagnostico": "A53.9",
+  "fonte_diagnostico": "episodio_assistencial",
+
+  "numero_ciclo": 1,
+  "data_primeira_dose": "2024-12-20",
+  "data_ultima_dose": "2025-01-03",
+  "qtd_doses": 3,
+  "intervalo_medio_dias": 7.0,
+  "status_ciclo": "COMPLETO",
+
+  "vdrl_diagnostico_data": "2024-12-18",
+  "vdrl_diagnostico_tit": "1:32",
+  "vdrl_controle_data": "2025-02-08",
+  "vdrl_controle_tit": "1:4",
+  "reducao_titulacao": 8.0,
+
+  "parceiro_tratado": TRUE,
+  "parceiro_qtd_doses": 3,
+  "parceiro_teste_rapido": TRUE,
+
+  "status_final": "CUIDADO_ADEQUADO",
+  "pendencias": NULL,
+  "alertas": NULL
+}
+```
+
+---
+
+## Consultas SQL Típicas
+
+### Exemplo 1: Taxa de Conclusão de Tratamento
+
+```sql
+-- Percentual de ciclos completos vs incompletos
+SELECT
+    status_ciclo,
+    COUNT(*) AS total_ciclos,
+    ROUND(COUNT(*) * 100.0 / SUM(COUNT(*)) OVER (), 2) AS percentual
+FROM `rj-sms-sandbox.sub_pav_us._sifilis`
+GROUP BY status_ciclo
+ORDER BY total_ciclos DESC;
+```
+
+**Resultado Esperado:**
+```
+┌─────────────┬──────────────┬────────────┐
+│ status_ciclo│ total_ciclos │ percentual │
+├─────────────┼──────────────┼────────────┤
+│ COMPLETO    │ 450          │ 75.00%     │
+│ INCOMPLETO  │ 120          │ 20.00%     │
+│ EM_CURSO    │ 30           │ 5.00%      │
+└─────────────┴──────────────┴────────────┘
+```
+
+### Exemplo 2: Gestantes com VDRL Controle Pendente
+
+```sql
+-- Ciclos completos sem VDRL de controle
+SELECT
+    id_gestacao,
+    id_paciente,
+    cpf,
+    data_ultima_dose,
+    DATE_DIFF(CURRENT_DATE(), data_ultima_dose, DAY) AS dias_pos_tratamento
+FROM `rj-sms-sandbox.sub_pav_us._sifilis`
+WHERE status_ciclo = 'COMPLETO'
+  AND vdrl_controle_data IS NULL
+  AND DATE_DIFF(CURRENT_DATE(), data_ultima_dose, DAY) >= 30
+ORDER BY dias_pos_tratamento DESC;
+```
+
+### Exemplo 3: Eficácia do Tratamento (Redução de Titulação)
+
+```sql
+-- Distribuição de redução de titulação VDRL
+SELECT
+    CASE
+        WHEN reducao_titulacao >= 4 THEN 'Cura Adequada (≥4x)'
+        WHEN reducao_titulacao >= 2 THEN 'Resposta Parcial (2-4x)'
+        WHEN reducao_titulacao >= 1 THEN 'Sem Resposta (1-2x)'
+        ELSE 'Aumento (falha)'
+    END AS categoria_resposta,
+    COUNT(*) AS qtd_casos,
+    ROUND(AVG(reducao_titulacao), 2) AS reducao_media
+FROM `rj-sms-sandbox.sub_pav_us._sifilis`
+WHERE vdrl_controle_data IS NOT NULL
+GROUP BY categoria_resposta
+ORDER BY reducao_media DESC;
+```
+
+### Exemplo 4: Cobertura de Tratamento de Parceiros
+
+```sql
+-- Taxa de tratamento adequado de parceiros
+SELECT
+    CASE
+        WHEN parceiro_qtd_doses = 3 THEN 'Completo (3 doses)'
+        WHEN parceiro_qtd_doses BETWEEN 1 AND 2 THEN 'Parcial (1-2 doses)'
+        WHEN parceiro_tratado = FALSE THEN 'Não tratado'
+        ELSE 'Sem informação'
+    END AS status_parceiro,
+    COUNT(DISTINCT id_gestacao) AS qtd_gestantes,
+    ROUND(COUNT(DISTINCT id_gestacao) * 100.0 /
+          SUM(COUNT(DISTINCT id_gestacao)) OVER (), 2) AS percentual
+FROM `rj-sms-sandbox.sub_pav_us._sifilis`
+GROUP BY status_parceiro
+ORDER BY qtd_gestantes DESC;
+```
+
+---
+
+## Métricas e Performance
+
+### Estatísticas Esperadas
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                   MÉTRICAS DE EXECUÇÃO                       │
+├──────────────────────────────────────────────────────────────┤
+│ Tempo de Execução:      ~2-5 minutos                        │
+│ Complexidade:            O(n log n) - Window functions      │
+│                                                              │
+│ Volume de Dados Típico:                                     │
+│   • Casos de sífilis: ~150-300 por 10.000 gestações (1-3%) │
+│   • Ciclos de tratamento: ~200-400 (média 1.3/gestante)    │
+│   • Dispensações individuais: ~600-1200 (avg 3 doses/ciclo)│
+│                                                              │
+│ Índices Recomendados:                                       │
+│   • CREATE INDEX ON id_gestacao                             │
+│   • CREATE INDEX ON id_paciente                             │
+│   • CREATE INDEX ON cpf                                     │
+│   • CREATE INDEX ON status_final                            │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### Indicadores de Qualidade Clínica
+
+```
+┌─────────────────────────────┬────────────┬─────────────────┐
+│ INDICADOR                   │ META       │ FONTE OMS/MS    │
+├─────────────────────────────┼────────────┼─────────────────┤
+│ Taxa de Tratamento Completo │ >95%       │ Protocolo MS    │
+│ Taxa de VDRL Controle       │ >90%       │ OMS 2016        │
+│ Intervalos Adequados        │ >80%       │ Guideline CDC   │
+│ Parceiros Tratados          │ >90%       │ Meta OMS        │
+│ Cura Sorológica (≥4x redução)│ >70%      │ Literatura      │
+└─────────────────────────────┴────────────┴─────────────────┘
+```
+
+---
+
+## Limitações e Considerações
+
+### Limitações Conhecidas
+
+```
+⚠️ LIMITAÇÕES DO ALGORITMO:
+
+1. Dados Incompletos:
+   • Depende de registro adequado de dispensação
+   • Parceiro: dados muitas vezes ausentes no prontuário
+   • VDRL: nem sempre coletado nos prazos ideais
+
+2. Regras de Ciclo:
+   • Limite de 21 dias pode agrupar erroneamente doses
+     atrasadas de tratamentos diferentes
+   • Não detecta abandono dentro do prazo de 14 dias
+     se paciente não retorna
+
+3. VDRL Associação:
+   • Se múltiplos VDRLs no período, pega o mais recente/primeiro
+   • Não captura todas as variações de titulação intermediárias
+
+4. Validação Clínica:
+   • Não valida dose do medicamento (assume 2.400.000 UI)
+   • Não diferencia tipo de Benzetacil (cristalina vs benzatina)
+
+5. Reinfecção vs Falha:
+   • Difícil distinguir entre falha terapêutica e reinfecção
+   • Necessita avaliação clínica manual em casos complexos
+```
+
+### Considerações de Performance
+
+```
+📊 OTIMIZAÇÕES IMPLEMENTADAS:
+
+• Filtro Precoce: Apenas gestantes com CID de sífilis
+• Window Functions: Evita subqueries aninhadas
+• Índices: Em todas as chaves de join
+• Particionamento: Por id_paciente nas window functions
+
+🚀 POTENCIAIS MELHORIAS:
+
+• Cache de Diagnósticos: Tabela intermediária pré-filtrada
+• Materialização: Views materializadas para dispensações
+• Paralelização: Processar múltiplos pacientes em paralelo
+```
+
+---
+
+## Dependências e Integrações
+
+### Relação com Outros Procedimentos
+
+```
+PROCEDIMENTO 1 (_gestacoes)
+         │
+         │ Fornece: id_gestacao, datas de gestação
+         │
+         ▼
+┌─────────────────────┐
+│  PROCEDIMENTO 8     │◄─── VOCÊ ESTÁ AQUI
+│     (sífilis)       │
+└─────────────────────┘
+         │
+         │ Referência adicional para _linha_tempo
+         │ (enriquecimento de dados clínicos)
+         │
+         ▼
+┌─────────────────────┐
+│ FERRAMENTAS DE BI   │
+│ • Dashboard de      │
+│   Eliminação de     │
+│   Sífilis Congênita │
+│ • Monitoramento     │
+│   de Indicadores    │
+│   do Ministério     │
+└─────────────────────┘
+```
+
+### Tabelas Fonte Utilizadas
+
+```
+┌───────────────────────────────┬──────────────────────────────┐
+│ TABELA                        │ USO                          │
+├───────────────────────────────┼──────────────────────────────┤
+│ episodio_assistencial         │ CIDs de sífilis (estruturado)│
+│ atendimento (JSON)            │ CIDs (fallback JSON)         │
+│ dispensacao_medicamentos      │ Benzetacil dispensado        │
+│ resultado_exames              │ VDRL (titulação)             │
+│ prontuario_estruturado        │ Dados do parceiro            │
+│ _gestacoes                    │ Vínculo com gestação         │
+└───────────────────────────────┴──────────────────────────────┘
+```
+
+---
+
+## Símbolos e Convenções
+
+```
+┌─────────┬──────────────────────────────────────────────────┐
+│ SÍMBOLO │ SIGNIFICADO                                      │
+├─────────┼──────────────────────────────────────────────────┤
+│ ┌─┐     │ Início/Fim de processo                           │
+│ │ │     │ Fluxo de dados (direção)                         │
+│ ├─┤     │ Decisão (bifurcação)                             │
+│ ●       │ Evento temporal (data/hora)                      │
+│ ▼       │ Continuação do fluxo                             │
+│ ✅      │ Status adequado / Cura confirmada                │
+│ ❌      │ Falha / Tratamento inadequado                    │
+│ ⚠️      │ Alerta / Pendência                               │
+│ 🔄      │ Em curso / Aguardando                            │
+│ 🆕      │ Novo caso identificado                           │
+│ 🧪      │ Exame laboratorial                               │
+│ ⚕️      │ Intervenção clínica                              │
+│ 👥      │ Relacionado ao parceiro                          │
+│ 📊      │ Métrica / Indicador                              │
+└─────────┴──────────────────────────────────────────────────┘
+```
+
+---
+
+## Resumo Executivo
+
+```
+╔═══════════════════════════════════════════════════════════════╗
+║          PROCEDIMENTO 8 - MONITORAMENTO DE SÍFILIS            ║
+║          (Algoritmo Especializado de Tratamento)              ║
+╠═══════════════════════════════════════════════════════════════╣
+║ OBJETIVO:                                                     ║
+║ Reconstruir história completa do tratamento de sífilis na    ║
+║ gestação, incluindo ciclos, intervalos, VDRL e parceiro      ║
+║                                                               ║
+║ COMPLEXIDADE: ⭐⭐⭐⭐⭐ (Muito Alta)                            ║
+║                                                               ║
+║ ENTRADAS:                                                     ║
+║ • episodio_assistencial (CIDs A51, A53, O981)                ║
+║ • dispensacao_medicamentos (Benzetacil)                      ║
+║ • resultado_exames (VDRL)                                    ║
+║ • prontuario (dados parceiro)                                ║
+║                                                               ║
+║ PROCESSAMENTO PRINCIPAL:                                      ║
+║ 1. Identificar casos (diagnósticos de sífilis)              ║
+║ 2. Reconstruir ciclos (agrupar doses por gap de 21 dias)    ║
+║ 3. Avaliar qualidade (completo/em curso/incompleto)         ║
+║ 4. Vincular VDRLs (diagnóstico e controle temporal)         ║
+║ 5. Avaliar cura (redução ≥4x na titulação)                  ║
+║ 6. Extrair dados parceiro (tratamento concomitante)         ║
+║                                                               ║
+║ SAÍDA:                                                        ║
+║ • Tabela: _sifilis                                            ║
+║ • Campos: ~25 campos (ciclos, doses, VDRL, status)          ║
+║ • Status semântico final com alertas e pendências            ║
+║                                                               ║
+║ INDICADORES GERADOS:                                          ║
+║ • Taxa de conclusão de tratamento (meta: >95%)              ║
+║ • Taxa de VDRL controle (meta: >90%)                         ║
+║ • Taxa de cura sorológica (meta: >70%)                       ║
+║ • Cobertura de tratamento de parceiros (meta: >90%)         ║
+║                                                               ║
+║ DESAFIO TÉCNICO:                                              ║
+║ Algoritmo temporal complexo para reconstruir ciclos de       ║
+║ tratamento a partir de dispensações soltas, com validação    ║
+║ de intervalos, vínculo de exames e avaliação de eficácia     ║
+║                                                               ║
+║ TEMPO DE EXECUÇÃO: ~2-5 minutos                              ║
+║ DEPENDÊNCIAS: ✅ Múltiplas tabelas fonte + _gestacoes         ║
+╚═══════════════════════════════════════════════════════════════╝
+```
+
+---
+
+## Contexto Epidemiológico e Importância
+
+### Por Que Sífilis Requer Algoritmo Especializado?
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│            DESAFIOS ÚNICOS DA SÍFILIS NA GESTAÇÃO                │
+└──────────────────────────────────────────────────────────────────┘
+
+🚨 IMPORTÂNCIA DE SAÚDE PÚBLICA:
+   • Sífilis congênita é 100% prevenível
+   • Brasil: Meta de eliminação (OMS) → <0.5 casos/1000 NV
+   • Tratamento simples mas exige RIGOR na execução
+
+⚕️ COMPLEXIDADE CLÍNICA:
+   • Tratamento: 3 doses com intervalo específico (7 dias ideais)
+   • Dose atrasada compromete eficácia
+   • Reinfecção comum se parceiro não tratado
+   • Monitoramento: VDRL pré e pós com queda de titulação
+
+📊 DESAFIO DE DADOS:
+   • Dispersão: Diagnóstico em uma tabela, tratamento em outra
+   • Temporalidade: Precisa reconstruir sequência temporal correta
+   • Parceiro: Dados frequentemente ausentes ou incompletos
+   • VDRL: Vincular exame certo ao ciclo certo (temporal)
+
+💰 IMPACTO ECONÔMICO:
+   • Sífilis congênita evitável com intervenção de baixo custo
+   • Sequelas graves: surdez, deficiência intelectual, óbito fetal
+   • Custo tratamento: ~R$15 vs custo sequelas: ~R$50.000+
+
+🎯 OBJETIVO DO ALGORITMO:
+   • Identificar GAPS no cuidado (onde falhou a cascata)
+   • Gerar alertas acionáveis para equipes de saúde
+   • Medir indicadores de qualidade do pré-natal
+   • Subsidiar políticas públicas de eliminação
+```
+
+### Cascata de Cuidado em Sífilis
+
+```
+CASCATA IDEAL (100 gestantes com sífilis):
+═══════════════════════════════════════════════════════════════
+
+100 ┌────────────────┐
+    │ DIAGNOSTICADAS │ ────────┐
+    └────────────────┘         │ Meta: 100%
+     ↓                         │ Real: ~85%
+ 95 ┌────────────────┐         │
+    │ TRATADAS       │ ────────┼────┐
+    │ (3 doses)      │         │    │ Meta: >95%
+    └────────────────┘         │    │ Real: ~60-70%
+     ↓                         │    │
+ 90 ┌────────────────┐         │    │
+    │ VDRL CONTROLE  │ ────────┼────┼────┐
+    │ (Monitoradas)  │         │    │    │ Meta: >90%
+    └────────────────┘         │    │    │ Real: ~50%
+     ↓                         │    │    │
+ 85 ┌────────────────┐         │    │    │
+    │ PARCEIRO       │ ────────┼────┼────┼────┐
+    │ TRATADO        │         │    │    │    │ Meta: >90%
+    └────────────────┘         │    │    │    │ Real: ~30-40%
+     ↓                         │    │    │    │
+ 75 ┌────────────────┐         │    │    │    │
+    │ CURA CONFIRMADA│ ────────┴────┴────┴────┴────┐
+    │ (Redução VDRL) │                              │
+    └────────────────┘                              │
+                                                    │
+OBJETIVO: Cada "degrau perdido" é oportunidade    │
+          de melhoria identificada pelo algoritmo   │
+```
